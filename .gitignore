@@ -179,3 +179,10 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+# Generated model artifacts
+artifacts/*.joblib
+!artifacts/.gitkeep
+
+# Không phân phối lại dữ liệu khi giấy phép chưa được xác minh
+data/*.csv

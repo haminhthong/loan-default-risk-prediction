@@ -6,4 +6,8 @@ seaborn==0.13.2
 jupyter==1.1.1
 joblib==1.4.2
 streamlit==1.40.1
-
+fastapi==0.115.5
+uvicorn==0.32.1
+pydantic==2.10.2
+pytest==8.3.4
+httpx==0.28.0
