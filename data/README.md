@@ -1,60 +1,69 @@
-# Dữ liệu
+# Danh mục dữ liệu
 
-## Tệp sử dụng
+## Dữ liệu dùng cho mô hình chính
 
-Notebook và mã nguồn kỳ vọng tệp `Bank Loan Dataset.csv` nằm trong thư mục `data/`.
-Tệp làm việc hiện có 38.576 dòng, 24 cột và 3 trạng thái khoản vay:
+`raw/lendingclub_2007_2011.csv` là bản LendingClub đầy đủ gồm 39.717 dòng và
+111 cột. Dữ liệu có `issue_d` từ tháng 06/2007 đến 12/2011, nhờ đó dự án có thể
+đánh giá out-of-time thay vì dùng ngày 2021 đã bị biến đổi.
 
-| Trạng thái | Số dòng | Vai trò |
+| Trạng thái | Số dòng | Cách xử lý |
 |---|---:|---|
-| `Fully Paid` | 32.145 | Nhãn 0: đã trả đủ |
-| `Charged Off` | 5.333 | Nhãn 1: ghi nhận mất vốn/nợ xấu |
-| `Current` | 1.098 | Loại khỏi huấn luyện vì kết quả cuối cùng chưa quan sát được |
+| `Fully Paid` | 32.950 | Nhãn 0 |
+| `Charged Off` | 5.627 | Nhãn 1 |
+| `Current` | 1.140 | Loại vì chưa có kết quả cuối cùng |
 
-Khoảng ngày `issue_date` trong tệp là 01/01/2021–12/12/2021. Tuy nhiên, đây không
-phải thời gian phát hành gốc đáng tin cậy. Ví dụ, khoản vay `id=1077430` tương ứng
-với một bản ghi LendingClub được công khai ở nơi khác với ngày phát hành tháng
-12/2011. Điều này cho thấy bản dữ liệu hiện tại đã được xử lý và thay đổi ngày.
+Pipeline chỉ dùng các trường có tại thời điểm cấp vay. Các trường hậu nghiệm như
+`total_pymnt`, `recoveries`, `last_pymnt_d`, `out_prncp` và
+`collection_recovery_fee` không nằm trong danh sách đặc trưng.
+
+Split theo thời gian:
+
+- Train: trước 01/01/2011 — 18.061 khoản vay đã kết thúc.
+- Validation: 01/01/2011–30/06/2011 — 9.015 khoản vay.
+- Test: từ 01/07/2011 — 11.501 khoản vay.
+
+## Các tệp bổ sung
+
+| Tệp | Kích thước | Vai trò | Có gộp vào model chính? |
+|---|---:|---|---|
+| `external/credit_train.csv` | 100.514 × 19 | Bộ phân loại tín dụng khác; có nhãn nhưng 18.514 Loan ID trùng | Không |
+| `external/credit_test.csv` | 10.353 × 18 | Test không nhãn của cùng bộ trên | Không |
+| `external/bank_personal_loan.csv` | 5.000 × 14 | Dự đoán chấp nhận personal loan, không phải default | Không |
+| `Bank Loan Dataset.csv` | 38.576 × 24 | Bản LendingClub rút gọn, ngày đã chuyển sang 2021 | Chỉ giữ để đối chiếu legacy |
+
+Không gộp các tệp chỉ vì cùng nói về “loan”. Chúng khác đơn vị quan sát, schema,
+nguồn và định nghĩa nhãn; gộp sẽ tạo target không nhất quán và metric khó diễn giải.
 
 ## Nguồn và giấy phép
 
-- Trang có cấu trúc 24 cột gần như trùng khớp: [Financial Loan Dataset của Aryan Singh trên Kaggle](https://www.kaggle.com/datasets/datawitharyan/financial-loan-dataset).
-- Nguồn dữ liệu thượng nguồn có khả năng là dữ liệu khoản vay LendingClub lịch sử.
-- Không có data card, tệp giấy phép, lịch sử tải xuống hoặc checksum từ nguồn đi
-  kèm bản CSV hiện tại. Vì vậy chưa thể chứng minh bản này được tải từ trang trên,
-  ai đã thực hiện biến đổi, hoặc giấy phép nào áp dụng cho bản đã biến đổi.
+Các tệp do người dùng cung cấp không đi kèm URL tải xuống, data card, checksum
+nguồn hoặc giấy phép. Dấu vết cột và ID cho thấy dữ liệu chính bắt nguồn từ
+LendingClub lịch sử, nhưng chưa đủ bằng chứng để xác nhận quyền phân phối lại.
 
 > Dataset được sử dụng cho mục đích học tập; nguồn gốc và quy trình thu thập ban đầu chưa được xác minh đầy đủ.
 
-Không phân phối lại CSV công khai trước khi xác minh quyền sử dụng. Khi tìm được
-nguồn chính xác, hãy bổ sung tên tác giả/tổ chức, URL phiên bản, ngày truy cập,
-giấy phép và checksum SHA-256.
+Toàn bộ CSV được loại khỏi Git bằng `.gitignore`. Trước khi công khai repository,
+cần bổ sung URL phiên bản chính xác, tác giả/tổ chức, ngày truy cập, giấy phép và
+SHA-256; nếu không, chỉ cung cấp hướng dẫn để người dùng tự đặt dữ liệu vào máy.
 
-## Ý nghĩa dữ liệu và cách tạo nhãn
+Checksum SHA-256 của các tệp đang dùng:
 
-Dữ liệu mô tả hồ sơ khoản vay, đặc điểm người vay, điều khoản cấp tín dụng và kết
-quả thanh toán. Dự án dự đoán rủi ro tại thời điểm cấp vay, nên loại các trường chỉ
-phát sinh sau giải ngân như `total_payment`, `last_payment_date`,
-`next_payment_date` và `last_credit_pull_date`.
+| Tệp | SHA-256 |
+|---|---|
+| `lendingclub_2007_2011.csv` | `a57286c2a5f329930c875366790c8f5291be7525b7b4e2355dcbfb2e73af6f04` |
+| `credit_train.csv` | `40b2f45ba4bacebb641bdcb0db290cd66c54fbeb334514ee9ba93f6825494894` |
+| `credit_test.csv` | `ca992a7fae41f734973eab26482fe47d79d29752a821aa070cf38aaa3ee7b4b5` |
+| `bank_personal_loan.csv` | `a095bd860adb83bb426ce3c54cdc41bdd7a7cc43be20d7ecaf93d87a2d2f57ee` |
+| `Bank Loan Dataset.csv` | `29f86ecd2a11e9eac5a97f28692d2437a6aa79b9f07fbffbd94beac2f5fdf578` |
 
-`loan_status` là cột trạng thái có sẵn trong CSV, không phải nhãn do dự án thu
-thập. Nhãn mô hình `default_flag` được ánh xạ như sau:
+## Định nghĩa nhãn
 
-```text
-Charged Off -> 1
-Fully Paid  -> 0
-Current     -> loại khỏi tập mô hình
-```
-
-Cách ánh xạ này chỉ tạo bài toán nhị phân từ trạng thái cuối kỳ; nó không chứng
-minh quy tắc nghiệp vụ ban đầu mà bên cung cấp dùng để tạo `loan_status`.
-
-## Đặt dữ liệu
+`loan_status` là trạng thái có sẵn trong dữ liệu. Dự án chỉ ánh xạ:
 
 ```text
-data/
-└── Bank Loan Dataset.csv
+Charged Off -> default_flag = 1
+Fully Paid  -> default_flag = 0
+Current     -> loại khỏi mô hình
 ```
 
-CSV không được đưa vào Git mặc định nếu điều khoản phân phối lại chưa rõ.
-
+Cách ánh xạ này không thay thế định nghĩa nghiệp vụ ban đầu của nhà cung cấp.

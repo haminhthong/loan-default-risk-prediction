@@ -11,7 +11,7 @@ sys.path.insert(0, str(ROOT))
 
 from src.predict import load_artifact, predict  # noqa: E402
 
-MODEL_PATH = ROOT / "artifacts" / "loan_default.joblib"
+MODEL_PATH = ROOT / "artifacts" / "loan_default_enhanced.joblib"
 
 
 @st.cache_resource

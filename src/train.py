@@ -16,18 +16,17 @@ from sklearn.dummy import DummyClassifier
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import StratifiedKFold, cross_validate, train_test_split
+from sklearn.model_selection import StratifiedKFold, cross_validate
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
-from src.data import load_and_validate
+from src.data import load_data, temporal_split
+from src.analysis import calibration_table, drift_report, logistic_odds_ratios
 from src.evaluate import choose_threshold, classification_metrics, slice_metrics
 from src.features import TARGET, build_features, create_target
 
 RANDOM_STATE = 42
-TEST_SIZE = 0.15
-VALIDATION_SIZE_WITHIN_TRAIN_VALIDATION = 0.1765
-SLICE_COLUMNS = ("grade", "home_ownership", "address_state")
+SLICE_COLUMNS = ("grade", "home_ownership", "addr_state")
 
 
 def make_pipeline(features: pd.DataFrame, estimator: Any = None) -> Pipeline:
@@ -124,16 +123,49 @@ def save_reports(
     comparison: pd.DataFrame,
     metrics: dict[str, float],
     slices: dict[str, pd.DataFrame],
+    extra_reports: dict[str, pd.DataFrame],
 ) -> None:
     """Lưu các báo cáo đánh giá dưới định dạng dễ kiểm tra phiên bản."""
     report_dir.mkdir(parents=True, exist_ok=True)
     comparison.to_csv(report_dir / "model_comparison.csv", index=False)
     for column, table in slices.items():
         table.to_csv(report_dir / f"slice_{column}.csv", index=False)
+    for name, table in extra_reports.items():
+        table.to_csv(report_dir / f"{name}.csv", index=False)
     (report_dir / "test_metrics.json").write_text(
         json.dumps(metrics, indent=2),
         encoding="utf-8",
     )
+
+
+def compare_feature_sets(
+    train_data: pd.DataFrame,
+    validation_data: pd.DataFrame,
+    test_data: pd.DataFrame,
+) -> pd.DataFrame:
+    """So sánh mô hình có và không có đặc trưng định giá tín dụng."""
+    rows = []
+    for include_pricing in (True, False):
+        X_train = build_features(train_data, include_pricing)
+        X_validation = build_features(validation_data, include_pricing)
+        X_test = build_features(test_data, include_pricing)
+        model = CalibratedClassifierCV(
+            make_pipeline(X_train), method="sigmoid", cv=3, n_jobs=-1
+        )
+        model.fit(X_train, train_data[TARGET])
+        validation_probability = model.predict_proba(X_validation)[:, 1]
+        threshold, _ = choose_threshold(
+            validation_data[TARGET], validation_probability
+        )
+        test_probability = model.predict_proba(X_test)[:, 1]
+        rows.append(
+            {
+                "feature_set": "with_pricing" if include_pricing else "without_pricing",
+                "threshold": threshold,
+                **classification_metrics(test_data[TARGET], test_probability, threshold),
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def train(
@@ -143,24 +175,15 @@ def train(
     random_state: int = RANDOM_STATE,
 ) -> dict[str, Any]:
     """Chia train/validation/test, chọn ngưỡng trên validation và đánh giá test."""
-    labeled = create_target(load_and_validate(data_path))
-    y = labeled[TARGET]
-    X = build_features(labeled)
+    labeled = create_target(load_data(data_path))
+    train_data, validation_data, test_data = temporal_split(labeled)
 
-    X_train_val, X_test, y_train_val, y_test = train_test_split(
-        X,
-        y,
-        test_size=TEST_SIZE,
-        stratify=y,
-        random_state=random_state,
-    )
-    X_train, X_validation, y_train, y_validation = train_test_split(
-        X_train_val,
-        y_train_val,
-        test_size=VALIDATION_SIZE_WITHIN_TRAIN_VALIDATION,
-        stratify=y_train_val,
-        random_state=random_state,
-    )
+    X_train = build_features(train_data)
+    X_validation = build_features(validation_data)
+    X_test = build_features(test_data)
+    y_train = train_data[TARGET]
+    y_validation = validation_data[TARGET]
+    y_test = test_data[TARGET]
 
     comparison = compare_models(X_train, y_train, random_state)
     eligible = comparison.loc[comparison["model"] != "dummy"]
@@ -180,6 +203,24 @@ def train(
     threshold, _ = choose_threshold(y_validation, validation_probability)
     test_probability = pipeline.predict_proba(X_test)[:, 1]
     metrics = classification_metrics(y_test, test_probability, threshold)
+    threshold_sensitivity = []
+    for false_negative_cost in (2.0, 5.0, 10.0):
+        selected_threshold, table = choose_threshold(
+            y_validation,
+            validation_probability,
+            false_negative_cost=false_negative_cost,
+        )
+        selected = table.iloc[0]
+        threshold_sensitivity.append(
+            {
+                "false_negative_cost": false_negative_cost,
+                "false_positive_cost": 1.0,
+                "threshold": selected_threshold,
+                "validation_cost": selected["cost"],
+                "validation_recall": selected["recall"],
+                "validation_precision": selected["precision"],
+            }
+        )
     slices = {
         column: slice_metrics(
             X_test,
@@ -191,17 +232,38 @@ def train(
         for column in SLICE_COLUMNS
         if column in X_test
     }
-    save_reports(report_dir, comparison, metrics, slices)
+    explanation_pipeline = make_pipeline(X_train)
+    explanation_pipeline.fit(X_train, y_train)
+    extra_reports = {
+        "feature_set_comparison": compare_feature_sets(
+            train_data, validation_data, test_data
+        ),
+        "threshold_sensitivity": pd.DataFrame(threshold_sensitivity),
+        "calibration_test": calibration_table(y_test, test_probability),
+        "drift_psi": drift_report(X_train, X_test),
+        "logistic_odds_ratios": logistic_odds_ratios(explanation_pipeline),
+    }
+    save_reports(report_dir, comparison, metrics, slices, extra_reports)
 
     artifact = {
         "pipeline": pipeline,
         "threshold": threshold,
-        "feature_columns": X.columns.tolist(),
+        "feature_columns": X_train.columns.tolist(),
         "metrics": metrics,
         "label_definition": {"Fully Paid": 0, "Charged Off": 1},
         "model_name": f"calibrated_{champion_name}",
         "random_state": random_state,
         "data_rows": len(labeled),
+        "split_rows": {
+            "train": len(train_data),
+            "validation": len(validation_data),
+            "test": len(test_data),
+        },
+        "split_definition": {
+            "train": "issue_date < 2011-01-01",
+            "validation": "2011-01-01 <= issue_date <= 2011-06-30",
+            "test": "issue_date >= 2011-07-01",
+        },
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(artifact, output_path)
@@ -213,8 +275,16 @@ def main() -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data", type=Path, default=Path("data/Bank Loan Dataset.csv"))
-    parser.add_argument("--output", type=Path, default=Path("artifacts/loan_default.joblib"))
+    parser.add_argument(
+        "--data",
+        type=Path,
+        default=Path("data/raw/lendingclub_2007_2011.csv"),
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path("artifacts/loan_default_enhanced.joblib"),
+    )
     parser.add_argument("--report-dir", type=Path, default=Path("reports"))
     args = parser.parse_args()
     artifact = train(args.data, args.output, args.report_dir)

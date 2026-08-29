@@ -1,38 +1,45 @@
 import pandas as pd
 import pytest
 
-from src.data import load_and_validate
+from src.data import load_data, temporal_split
 
 
 def valid_frame() -> pd.DataFrame:
-    """Tạo một bản ghi tối thiểu thỏa schema đầu vào."""
+    """Tạo ba khoản vay tối thiểu thuộc ba giai đoạn thời gian."""
     return pd.DataFrame(
         {
-            "id": [1],
-            "member_id": [2],
-            "loan_status": ["Fully Paid"],
-            "annual_income": [50000],
-            "dti": [0.2],
-            "installment": [200],
-            "int_rate": [0.1],
-            "loan_amount": [5000],
-            "total_acc": [4],
-            "emp_length": ["2 years"],
-            "term": ["36 months"],
-            "issue_date": ["01-01-2021"],
+            "id": [1, 2, 3],
+            "loan_status": ["Fully Paid", "Charged Off", "Fully Paid"],
+            "issue_d": ["Dec-10", "Mar-11", "Sep-11"],
+            "loan_amnt": [5000] * 3,
+            "term": ["36 months"] * 3,
+            "int_rate": ["10.00%"] * 3,
+            "installment": [200] * 3,
+            "grade": ["B"] * 3,
+            "sub_grade": ["B2"] * 3,
+            "emp_length": ["2 years"] * 3,
+            "home_ownership": ["RENT"] * 3,
+            "annual_inc": [50000] * 3,
+            "verification_status": ["Verified"] * 3,
+            "purpose": ["debt_consolidation"] * 3,
+            "addr_state": ["CA"] * 3,
+            "dti": [0.2] * 3,
+            "total_acc": [4] * 3,
         }
     )
 
 
-def test_schema_validation_accepts_valid_csv(tmp_path):
+def test_load_data_and_temporal_split(tmp_path):
     path = tmp_path / "data.csv"
     valid_frame().to_csv(path, index=False)
-    assert len(load_and_validate(path)) == 1
+    train, validation, test = temporal_split(load_data(path))
+    assert (len(train), len(validation), len(test)) == (1, 1, 1)
 
 
-def test_schema_validation_rejects_duplicate_id(tmp_path):
-    data = pd.concat([valid_frame(), valid_frame()], ignore_index=True)
+def test_load_data_rejects_duplicate_id(tmp_path):
+    data = valid_frame()
+    data.loc[1, "id"] = 1
     path = tmp_path / "data.csv"
     data.to_csv(path, index=False)
     with pytest.raises(ValueError, match="duy nhất"):
-        load_and_validate(path)
+        load_data(path)

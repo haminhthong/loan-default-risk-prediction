@@ -8,14 +8,21 @@ học tập và portfolio. Không dùng để tự động phê duyệt, từ ch
 ## Model và đánh giá
 
 Champion là Logistic Regression sau sigmoid calibration. Model được chọn theo
-PR-AUC trung bình của 5-fold CV trên train. Threshold được chọn riêng trên
-validation với giả định chi phí false negative:false positive là 5:1; test chỉ
-được dùng để báo cáo cuối.
+PR-AUC trung bình của 5-fold CV trên dữ liệu trước năm 2011. Threshold được chọn
+trên nửa đầu năm 2011 với giả định chi phí false negative:false positive là 5:1;
+nửa cuối năm 2011 là test out-of-time và chỉ dùng để báo cáo cuối.
+
+So sánh feature set cho thấy phiên bản không có `int_rate` và `sub_grade` đạt
+PR-AUC 0,3384, tương đương hoặc nhỉnh hơn phiên bản đầy đủ 0,3366. Đây là dấu hiệu
+model không hoàn toàn phụ thuộc vào hệ thống định giá sẵn có, nhưng cần xác nhận
+trên dữ liệu ngoài mẫu trước khi thay đổi artifact triển khai.
 
 ## Hạn chế
 
 - Nguồn, giấy phép và phép biến đổi ngày của CSV chưa được xác minh đầy đủ.
-- Không có out-of-time validation hợp lệ.
+- Out-of-time test chỉ bao phủ một giai đoạn lịch sử và một nguồn dữ liệu.
 - Cost ratio 5:1 chỉ là sensitivity scenario, không phải expected loss thực tế.
 - Slice theo địa lý/grade không thay thế kiểm định fairness với thuộc tính nhạy cảm.
 - Xác suất và threshold không được dùng ngoài phân phối dữ liệu này nếu chưa tái kiểm định.
+- PSI cho thấy drift đáng kể ở một số trường; cần giám sát và đặt ngưỡng tái huấn luyện.
+- Odds ratio chỉ mô tả liên hệ trong mô hình, không được diễn giải là tác động nhân quả.

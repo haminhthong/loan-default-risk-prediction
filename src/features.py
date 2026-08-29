@@ -1,4 +1,4 @@
-"""Tạo đặc trưng chỉ từ thông tin có tại thời điểm cấp khoản vay."""
+"""Tạo nhãn và đặc trưng chỉ từ thông tin có tại thời điểm cấp vay."""
 
 from __future__ import annotations
 
@@ -6,63 +6,76 @@ import numpy as np
 import pandas as pd
 
 TARGET = "default_flag"
-FINAL_STATUSES = {"Fully Paid": 0, "Charged Off": 1}
+FINAL_STATUS_MAP = {"Fully Paid": 0, "Charged Off": 1}
 
-# Các cột này có sau giải ngân hoặc là định danh, không được đưa vào mô hình.
-LEAKAGE_COLUMNS = [
-    "loan_status",
-    "total_payment",
-    "last_payment_date",
-    "next_payment_date",
-    "last_credit_pull_date",
-    "id",
-    "member_id",
+MODEL_COLUMNS = [
+    "loan_amnt", "term", "int_rate", "installment", "grade", "sub_grade",
+    "emp_length", "home_ownership", "annual_inc", "verification_status",
+    "purpose", "addr_state", "dti", "delinq_2yrs", "inq_last_6mths",
+    "open_acc", "pub_rec", "revol_bal", "revol_util", "total_acc",
+    "earliest_cr_line", "issue_date",
 ]
-
-EMP_LENGTH_MAP = {
-    "< 1 year": 0,
-    "1 year": 1,
-    "2 years": 2,
-    "3 years": 3,
-    "4 years": 4,
-    "5 years": 5,
-    "6 years": 6,
-    "7 years": 7,
-    "8 years": 8,
-    "9 years": 9,
-    "10+ years": 10,
-}
 
 
 def create_target(data: pd.DataFrame) -> pd.DataFrame:
-    """Giữ các khoản vay đã có kết quả cuối cùng và tạo nhãn nhị phân."""
-    if "loan_status" not in data.columns:
-        raise ValueError("Thiếu cột bắt buộc 'loan_status'.")
-    result = data.loc[data["loan_status"].isin(FINAL_STATUSES)].copy()
-    result[TARGET] = result["loan_status"].map(FINAL_STATUSES).astype("int8")
-    return result
+    """Loại khoản vay chưa kết thúc và ánh xạ trạng thái thành nhãn nhị phân."""
+    final_loans = data.loc[data["loan_status"].isin(FINAL_STATUS_MAP)].copy()
+    final_loans[TARGET] = (
+        final_loans["loan_status"].map(FINAL_STATUS_MAP).astype("int8")
+    )
+    return final_loans
 
 
-def build_features(data: pd.DataFrame, include_pricing: bool = True) -> pd.DataFrame:
-    """Tạo ma trận đặc trưng; không thay đổi DataFrame đầu vào."""
-    result = data.copy()
-    result["emp_length_years"] = result["emp_length"].map(EMP_LENGTH_MAP)
-    result["term_months"] = pd.to_numeric(
-        result["term"].astype("string").str.extract(r"(\d+)", expand=False),
+def _parse_percentage(series: pd.Series) -> pd.Series:
+    """Đổi chuỗi phần trăm như `10.65%` thành tỷ lệ số thực `0.1065`."""
+    return pd.to_numeric(
+        series.astype("string").str.rstrip("%"), errors="coerce"
+    ).div(100)
+
+
+def build_features(
+    data: pd.DataFrame,
+    include_pricing: bool = True,
+) -> pd.DataFrame:
+    """Tạo ma trận đặc trưng mà không thay đổi DataFrame đầu vào."""
+    source = data.copy()
+    if "issue_date" not in source and "issue_d" in source:
+        source["issue_date"] = pd.to_datetime(
+            source["issue_d"], format="%b-%y", errors="coerce"
+        )
+
+    columns = [column for column in MODEL_COLUMNS if column in source.columns]
+    features = source.loc[:, columns].copy()
+
+    features["term_months"] = pd.to_numeric(
+        features.pop("term").astype("string").str.extract(r"(\d+)", expand=False),
         errors="coerce",
     )
-    result["log_annual_income"] = np.log1p(result["annual_income"].clip(lower=0))
-    result["installment_income_ratio"] = (
-        12 * result["installment"] / result["annual_income"].replace(0, np.nan)
+    features["interest_rate"] = _parse_percentage(features.pop("int_rate"))
+    features["revolving_utilization"] = _parse_percentage(features.pop("revol_util"))
+    annual_income = features.pop("annual_inc")
+    features["log_annual_income"] = np.log1p(annual_income.clip(lower=0))
+    features["installment_income_ratio"] = (
+        12 * features["installment"] / annual_income.replace(0, np.nan)
     )
-    result["issue_month"] = pd.to_datetime(
-        result["issue_date"], dayfirst=True, errors="coerce"
-    ).dt.month
 
-    result = result.drop(
-        columns=LEAKAGE_COLUMNS + [TARGET, "emp_length", "term", "issue_date", "emp_title"],
-        errors="ignore",
+    earliest_credit = pd.to_datetime(
+        features.pop("earliest_cr_line"), format="%b-%y", errors="coerce"
     )
+    issue_date = features.pop("issue_date")
+    # `%y` có thể hiểu 1968 thành 2068; lùi một thế kỷ nếu ngày mở tín dụng
+    # nằm sau ngày cấp khoản vay.
+    earliest_credit = earliest_credit.where(
+        earliest_credit <= issue_date,
+        earliest_credit - pd.DateOffset(years=100),
+    )
+    features["credit_history_years"] = (
+        (issue_date - earliest_credit).dt.days / 365.25
+    )
+    features["issue_month"] = issue_date.dt.month
+
     if not include_pricing:
-        result = result.drop(columns=["int_rate", "sub_grade"], errors="ignore")
-    return result
+        features = features.drop(
+            columns=["interest_rate", "sub_grade"], errors="ignore"
+        )
+    return features

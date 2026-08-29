@@ -12,7 +12,7 @@ from src.features import build_features
 
 
 def load_artifact(
-    path: str | Path = "artifacts/loan_default.joblib",
+    path: str | Path = "artifacts/loan_default_enhanced.joblib",
 ) -> dict[str, Any]:
     """Nạp artifact gồm pipeline, ngưỡng và metadata huấn luyện."""
     return joblib.load(path)

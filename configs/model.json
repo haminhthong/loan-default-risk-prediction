@@ -1,2 +1,11 @@
-{"random_state": 42, "split": {"train": 0.70, "validation": 0.15, "test": 0.15},
- "false_negative_cost": 5.0, "false_positive_cost": 1.0, "calibration": "sigmoid"}
+{
+  "random_state": 42,
+  "split": {
+    "train": "issue_date < 2011-01-01",
+    "validation": "2011-01-01 đến 2011-06-30",
+    "test": "issue_date >= 2011-07-01"
+  },
+  "false_negative_cost": 5.0,
+  "false_positive_cost": 1.0,
+  "calibration": "sigmoid"
+}

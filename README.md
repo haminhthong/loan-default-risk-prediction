@@ -20,18 +20,18 @@ pipeline, loại biến hậu nghiệm và chỉ chọn ngưỡng trên tập va
   5 lần một cảnh báo nhầm.
 - Mô hình và ngưỡng được lưu chung bằng `joblib`.
 
-Lần kiểm thử với `random_state=42`, calibrated Logistic Regression và cách chia 70/15/15 cho
-kết quả trên test độc lập:
+Lần kiểm thử với `random_state=42`, calibrated Logistic Regression và test
+out-of-time nửa cuối năm 2011 cho kết quả:
 
 | Chỉ số | Giá trị |
 |---|---:|
-| PR-AUC | 0,2796 |
-| ROC-AUC | 0,7059 |
-| Recall nợ xấu | 0,6575 |
-| Precision nợ xấu | 0,2441 |
-| F1 | 0,3560 |
+| PR-AUC | 0,3366 |
+| ROC-AUC | 0,7196 |
+| Recall nợ xấu | 0,5907 |
+| Precision nợ xấu | 0,3036 |
+| F1 | 0,4011 |
 | Balanced accuracy | 0,6598 |
-| Brier score | 0,1138 |
+| Brier score | 0,1287 |
 | Ngưỡng chọn trên validation | 0,15 |
 
 Các con số phụ thuộc phiên bản dữ liệu và môi trường. Artifact đi kèm lưu cả
@@ -40,11 +40,10 @@ thay đổi.
 
 ## Nguồn dữ liệu và giới hạn
 
-Tệp hiện có gồm 38.576 khoản vay và 24 cột. Cấu trúc của nó gần như trùng với
-[Financial Loan Dataset của Aryan Singh trên Kaggle](https://www.kaggle.com/datasets/datawitharyan/financial-loan-dataset),
-và một số định danh khớp dữ liệu LendingClub lịch sử. Tuy nhiên, bản CSV này đã
-được đổi tên/rút gọn cột và thay đổi ngày; không có data card hay tệp giấy phép đi
-kèm để chứng minh chính xác chuỗi nguồn gốc.
+Mô hình chính dùng 39.717 khoản vay LendingClub với 111 cột và ngày phát hành từ
+06/2007 đến 12/2011. Bộ dữ liệu này khôi phục ngày gốc và thay thế bản 24 cột có
+ngày bị đổi sang năm 2021. Ba CSV bổ sung được lưu trong data catalog nhưng không
+gộp vào model vì khác schema hoặc khác định nghĩa nhãn.
 
 > Dataset được sử dụng cho mục đích học tập; nguồn gốc và quy trình thu thập ban đầu chưa được xác minh đầy đủ.
 
@@ -75,9 +74,11 @@ thêm phép so sánh có và không có `int_rate`, `sub_grade` trước khi di�
 .
 ├── README.md
 ├── requirements.txt
+├── requirements-dev.txt
 ├── data/
 │   ├── README.md
-│   └── Bank Loan Dataset.csv
+│   ├── raw/lendingclub_2007_2011.csv
+│   └── external/
 ├── notebooks/
 │   └── Bank_Loan.ipynb
 ├── src/
@@ -100,7 +101,7 @@ thêm phép so sánh có và không có `int_rate`, `sub_grade` trước khi di�
 ## Kiến trúc
 
 ```text
-CSV -> schema guard -> point-in-time features -> split 70/15/15
+CSV -> schema guard -> point-in-time features -> split theo issue_date
                                       |
              train -> 5-fold model comparison -> calibration CV
                                       |
@@ -143,10 +144,14 @@ Khám phá và tái tạo phân tích đầy đủ:
 jupyter notebook notebooks/Bank_Loan.ipynb
 ```
 
+Notebook trên được giữ làm lịch sử phân tích của bản dữ liệu 24 cột. Pipeline và
+kết quả chính thức hiện nằm trong `src/` và dùng dữ liệu LendingClub gốc; không
+dùng metric trong notebook legacy để mô tả phiên bản hiện tại.
+
 Huấn luyện pipeline gọn từ dòng lệnh:
 
 ```bash
-python -m src.train --data "data/Bank Loan Dataset.csv" --output artifacts/loan_default.joblib
+python -m src.train
 ```
 
 Chạy test:
@@ -177,7 +182,7 @@ docker run --rm -p 8000:8000 loan-default-risk
 ## Quy trình mô hình hóa
 
 1. Chỉ giữ `Fully Paid` và `Charged Off`, sau đó tạo `default_flag`.
-2. Chia train/validation/test có stratify trước khi dùng dữ liệu để ra quyết định.
+2. Chia train/validation/test theo `issue_date`, giữ giai đoạn mới nhất làm test.
 3. Tạo đặc trưng từ thông tin có trước hoặc tại lúc giải ngân.
 4. Điền thiếu, chuẩn hóa và one-hot encoding bên trong pipeline.
 5. So sánh model bằng CV trên train, chọn champion theo PR-AUC.
@@ -190,25 +195,57 @@ docker run --rm -p 8000:8000 loan-default-risk
 
 | Model | PR-AUC CV | ROC-AUC CV | Balanced accuracy CV |
 |---|---:|---:|---:|
-| Logistic Regression | 0,2809 ± 0,0201 | 0,7033 ± 0,0116 | 0,6425 ± 0,0127 |
-| Random Forest | 0,2778 ± 0,0090 | 0,6966 ± 0,0067 | 0,5935 ± 0,0109 |
-| Dummy | 0,1423 ± 0,0001 | 0,5000 | 0,5000 |
+| Logistic Regression | 0,2485 ± 0,0172 | 0,6898 ± 0,0072 | 0,6385 ± 0,0111 |
+| Random Forest | 0,2360 ± 0,0153 | 0,6821 ± 0,0114 | 0,5352 ± 0,0051 |
+| Dummy | 0,1313 ± 0,0001 | 0,5000 | 0,5000 |
 
 Logistic Regression được chọn vì PR-AUC cao nhất, không phải vì phức tạp hơn.
 
-Tách ngẫu nhiên phù hợp với bản hiện tại vì trường ngày đã bị biến đổi và chỉ phủ
-năm 2021. Không nên gọi đây là out-of-time validation. Khi có ngày phát hành gốc
-qua nhiều giai đoạn, cần chia theo thời gian và dành giai đoạn mới nhất làm test.
+## Pricing-feature ablation
+
+| Feature set | PR-AUC | ROC-AUC | Recall | Precision | F1 |
+|---|---:|---:|---:|---:|---:|
+| Có `int_rate`, `sub_grade` | 0,3366 | 0,7196 | 0,5907 | 0,3036 | 0,4011 |
+| Không có pricing features | 0,3384 | 0,7195 | 0,6283 | 0,2924 | 0,3991 |
+
+Loại pricing features không làm giảm khả năng xếp hạng và còn tăng nhẹ PR-AUC.
+Điều này cho thấy mô hình không chỉ học lại mức lãi suất hoặc sub-grade sẵn có.
+Artifact triển khai vẫn giữ phiên bản có pricing để tương thích với protocol đã
+chốt; báo cáo ablation là bằng chứng cần cân nhắc trước phiên bản tiếp theo.
+
+## Threshold theo chi phí
+
+| Chi phí FN:FP | Threshold | Recall validation | Precision validation |
+|---|---:|---:|---:|
+| 2:1 | 0,37 | 0,0486 | 0,4063 |
+| 5:1 | 0,15 | 0,6114 | 0,2515 |
+| 10:1 | 0,08 | 0,9028 | 0,1895 |
+
+Các kết quả thể hiện trade-off rất lớn. Tỷ lệ 5:1 chỉ là kịch bản minh họa; một
+hệ thống thật phải thay bằng EAD, LGD và lợi nhuận cơ hội của từng khoản vay.
+
+## Calibration, giải thích và drift
+
+- Brier score trên test: `0,1287`.
+- Ở bin xác suất `0,2–0,3`, xác suất trung bình là `0,239` nhưng default rate thực
+  tế là `0,333`; mô hình vẫn đánh giá thấp rủi ro ở vùng này.
+- Các biến drift mạnh ngoài mùa phát hành gồm `verification_status` (PSI `0,221`),
+  `interest_rate` (`0,220`) và `purpose` (`0,203`).
+- Odds ratio được xuất cho Logistic Regression. Ví dụ `small_business` có odds
+  dự báo cao hơn khoảng `1,80×`; đây là quan hệ dự báo, không phải quan hệ nhân quả.
+
+Train gồm các khoản vay trước năm 2011, validation là nửa đầu năm 2011 và test là
+nửa cuối năm 2011. Cách chia này đo suy giảm qua thời gian tốt hơn random split,
+nhưng vẫn chưa thay thế external validation trên một tổ chức hoặc giai đoạn khác.
 
 ## Hướng phát triển
 
 - So sánh Logistic Regression với CatBoost/XGBoost bằng cùng các fold.
 - Tối ưu siêu tham số bằng `RandomizedSearchCV` trên train, không dùng test.
-- Báo cáo hai kịch bản có/không có `int_rate` và `sub_grade`.
-- Hiệu chỉnh chi phí FN/FP dựa trên tổn thất thực tế thay vì hệ số minh họa 5:1.
-- Thêm out-of-time validation khi khôi phục được ngày gốc.
-- Thêm SHAP cho mô hình cây hoặc odds ratio cho Logistic Regression.
-- Theo dõi calibration và drift sau triển khai.
+- Thay cost ratio minh họa bằng expected loss dựa trên EAD/LGD thật.
+- Thêm external validation trên nguồn dữ liệu có định nghĩa nhãn tương thích.
+- Thêm SHAP nếu champion tương lai là mô hình cây.
+- Định nghĩa ngưỡng cảnh báo drift và lịch tái huấn luyện.
 
 ## Hạn chế và sử dụng có trách nhiệm
 
@@ -222,9 +259,9 @@ Xem thêm [MODEL_CARD.md](MODEL_CARD.md) và các báo cáo sinh tự động tr
 
 ## Gợi ý mô tả trong CV
 
-- Xây dựng pipeline dự báo nợ xấu chống leakage trên 37.478 khoản vay có nhãn,
-  dùng 5-fold CV và test độc lập; đạt ROC-AUC 0,706 và recall 65,8%.
+- Xây dựng pipeline dự báo nợ xấu chống leakage trên 38.577 khoản vay đã kết thúc,
+  dùng 5-fold CV và test out-of-time; đạt ROC-AUC 0,720 và PR-AUC 0,337.
 - Thiết kế threshold theo chi phí FN:FP 5:1, sigmoid calibration và lưu chung
   preprocessing/model/threshold trong một artifact phục vụ FastAPI và Streamlit.
-- Bổ sung schema guard, 6 unit test, slice analysis, Docker và GitHub Actions để
+- Bổ sung schema guard, 8 unit test, slice/drift/calibration analysis, Docker và GitHub Actions để
   chuyển notebook thành repository có thể cài đặt, kiểm thử và chạy lại.
