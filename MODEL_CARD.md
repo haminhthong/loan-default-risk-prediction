@@ -12,10 +12,9 @@ PR-AUC trung bình của 5-fold CV trên dữ liệu trước năm 2011. Thresho
 trên nửa đầu năm 2011 với giả định chi phí false negative:false positive là 5:1;
 nửa cuối năm 2011 là test out-of-time và chỉ dùng để báo cáo cuối.
 
-So sánh feature set cho thấy phiên bản không có `int_rate` và `sub_grade` đạt
-PR-AUC 0,3384, tương đương hoặc nhỉnh hơn phiên bản đầy đủ 0,3366. Đây là dấu hiệu
-model không hoàn toàn phụ thuộc vào hệ thống định giá sẵn có, nhưng cần xác nhận
-trên dữ liệu ngoài mẫu trước khi thay đổi artifact triển khai.
+Artifact triển khai không dùng `int_rate` và `sub_grade`. Phiên bản này đạt
+PR-AUC 0,3384, nhỉnh hơn phiên bản đầy đủ 0,3366, đồng thời giảm nguy cơ học lại
+hệ thống định giá sẵn có. Quyết định vẫn cần xác nhận trên dữ liệu ngoài mẫu.
 
 ## Hạn chế
 

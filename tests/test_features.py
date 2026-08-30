@@ -1,10 +1,14 @@
+"""
+Các bài kiểm thử tự động (Unit Tests) cho mô-đun tạo nhãn và trích xuất đặc trưng `src/features.py`.
+"""
+
 import pandas as pd
 
 from src.features import TARGET, build_features, create_target
 
 
 def sample_data() -> pd.DataFrame:
-    """Tạo dữ liệu nhỏ có cả trạng thái cuối cùng và trạng thái đang chạy."""
+    """Tạo mẫu dữ liệu chứa cả trạng thái đã kết thúc và trạng thái đang chạy ('Current')."""
     return pd.DataFrame(
         {
             "loan_status": ["Fully Paid", "Charged Off", "Current"],
@@ -30,10 +34,12 @@ def sample_data() -> pd.DataFrame:
 
 
 def test_target_excludes_current():
+    """Kiểm tra việc loại bỏ khoản vay chưa kết thúc ('Current') và ánh xạ nhãn đúng (0 và 1)."""
     assert create_target(sample_data())[TARGET].tolist() == [0, 1]
 
 
 def test_feature_engineering_is_point_in_time_safe():
+    """Kiểm tra đặc trưng được trích xuất an toàn, chuyển đổi phần trăm đúng và loại bỏ nhãn/trạng thái."""
     features = build_features(create_target(sample_data()))
     assert TARGET not in features
     assert "loan_status" not in features

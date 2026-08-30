@@ -1,3 +1,7 @@
+"""
+Các bài kiểm thử tự động (Unit Tests) cho mô-đun suy luận dự báo `src/predict.py`.
+"""
+
 from sklearn.dummy import DummyClassifier
 
 from src.features import build_features
@@ -6,7 +10,7 @@ from tests.test_features import sample_data
 
 
 def test_prediction_schema():
-    """Kết quả dự báo phải giữ đúng số dòng và schema công bố."""
+    """Kiểm tra kết quả dự báo phải giữ đúng số dòng và đủ 2 cột default_probability, default_prediction."""
     raw = sample_data().iloc[:2]
     features = build_features(raw)
     model = DummyClassifier(strategy="prior").fit(features, [0, 1])
@@ -14,6 +18,7 @@ def test_prediction_schema():
         "pipeline": model,
         "threshold": 0.5,
         "feature_columns": features.columns.tolist(),
+        "include_pricing_features": True,
     }
     result = predict(raw, artifact)
     assert result.columns.tolist() == ["default_probability", "default_prediction"]

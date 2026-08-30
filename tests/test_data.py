@@ -1,3 +1,7 @@
+"""
+Các bài kiểm thử tự động (Unit Tests) cho mô-đun nạp và kiểm tra dữ liệu `src/data.py`.
+"""
+
 import pandas as pd
 import pytest
 
@@ -5,7 +9,7 @@ from src.data import load_data, temporal_split
 
 
 def valid_frame() -> pd.DataFrame:
-    """Tạo ba khoản vay tối thiểu thuộc ba giai đoạn thời gian."""
+    """Tạo mẫu dữ liệu khoản vay hợp lệ tối thiểu thuộc 3 mốc thời gian."""
     return pd.DataFrame(
         {
             "id": [1, 2, 3],
@@ -30,6 +34,7 @@ def valid_frame() -> pd.DataFrame:
 
 
 def test_load_data_and_temporal_split(tmp_path):
+    """Kiểm tra nạp dữ liệu từ CSV và chia tập theo mốc thời gian (Train, Validation, Test)."""
     path = tmp_path / "data.csv"
     valid_frame().to_csv(path, index=False)
     train, validation, test = temporal_split(load_data(path))
@@ -37,6 +42,7 @@ def test_load_data_and_temporal_split(tmp_path):
 
 
 def test_load_data_rejects_duplicate_id(tmp_path):
+    """Kiểm tra tính năng Schema Guard phát hiện và từ chối cột ID chứa giá trị trùng lặp."""
     data = valid_frame()
     data.loc[1, "id"] = 1
     path = tmp_path / "data.csv"
