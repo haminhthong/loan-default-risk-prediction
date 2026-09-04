@@ -1,11 +1,12 @@
 """
-Các bài kiểm thử tự động (Unit Tests) cho Pydantic Schema kiểm tra dữ liệu đầu vào API `app/api.py`.
+Các bài kiểm thử tự động (Unit Tests) cho Pydantic Schema và FastAPI API Endpoints `app/api.py`.
 """
 
 import pytest
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from app.api import LoanApplication
+from app.api import LoanApplication, app, MODEL_PATH
 
 
 def valid_application() -> dict:
@@ -13,10 +14,8 @@ def valid_application() -> dict:
     return {
         "loan_amnt": 10000,
         "term": "36 months",
-        "int_rate": "12.50%",
         "installment": 334.54,
         "grade": "B",
-        "sub_grade": "B3",
         "home_ownership": "RENT",
         "annual_inc": 60000,
         "verification_status": "Verified",
@@ -37,3 +36,60 @@ def test_api_schema_rejects_negative_loan_amount():
     application["loan_amnt"] = -1
     with pytest.raises(ValidationError):
         LoanApplication(**application)
+
+
+def test_api_schema_rejects_invalid_term():
+    """Kiểm tra từ chối term không thuộc Literal["36 months", "60 months"]."""
+    application = valid_application()
+    application["term"] = "24 months"
+    with pytest.raises(ValidationError):
+        LoanApplication(**application)
+
+
+def test_api_schema_rejects_extra_fields():
+    """Kiểm tra extra='forbid' từ chối trường lạ không khai báo (ví dụ annual_income thay vì annual_inc)."""
+    application = valid_application()
+    application["annual_income"] = 60000  # Cột thừa/sai tên
+    with pytest.raises(ValidationError):
+        LoanApplication(**application)
+
+
+def test_health_endpoint():
+    """Kiểm tra endpoint /health trả về đúng format và KHÔNG rò rỉ model_path đường dẫn tuyệt đối máy chủ."""
+    client = TestClient(app)
+    response = client.get("/health")
+    assert response.status_code == 200
+    data = response.json()
+    assert "status" in data
+    assert "model_loaded" in data
+    assert "model_path" not in data  # Bảo vệ an ninh: không lộ đường dẫn server
+
+
+def test_score_rejects_empty_batch():
+    """Kiểm tra /score từ chối danh sách rỗng (records: [])."""
+    client = TestClient(app)
+    response = client.post("/score", json={"records": []})
+    assert response.status_code == 422
+
+
+def test_score_rejects_more_than_1000_records():
+    """Kiểm tra /score từ chối danh sách quá 1000 hồ sơ."""
+    client = TestClient(app)
+    records = [valid_application()] * 1001
+    response = client.post("/score", json={"records": records})
+    assert response.status_code == 422
+
+
+def test_score_valid_request(monkeypatch):
+    """Kiểm tra /score hoạt động thành công với request hợp lệ khi có artifact."""
+    if not MODEL_PATH.exists():
+        pytest.skip("Chưa có file artifact thực tế")
+
+    client = TestClient(app)
+    response = client.post("/score", json={"records": [valid_application()]})
+    assert response.status_code == 200
+    body = response.json()
+    assert "predictions" in body
+    assert len(body["predictions"]) == 1
+    assert "default_probability" in body["predictions"][0]
+    assert "default_prediction" in body["predictions"][0]

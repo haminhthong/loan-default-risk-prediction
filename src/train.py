@@ -16,26 +16,44 @@ Quy trình thực hiện:
 from __future__ import annotations
 
 import argparse
+import datetime
+import hashlib
 import json
 from pathlib import Path
 import sys
-from typing import Any, Dict
+from typing import Any
 
 import joblib
+import numpy as np
 import pandas as pd
+import sklearn
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.compose import ColumnTransformer
 from sklearn.dummy import DummyClassifier
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import StratifiedKFold, cross_validate
+from sklearn.metrics import (
+    average_precision_score,
+    brier_score_loss,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+)
+from sklearn.model_selection import cross_validate
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
+
 from src.analysis import calibration_table, drift_report, logistic_odds_ratios
-from src.data import load_data, temporal_split
-from src.evaluate import choose_threshold, classification_metrics, slice_metrics
+from src.data import analyze_target_censoring, load_data, temporal_split
+from src.evaluate import (
+    bootstrap_metric_ci,
+    choose_threshold,
+    classification_metrics,
+    compute_calibration_diagnostics,
+    slice_metrics,
+)
 from src.features import TARGET, build_features, create_target
 
 # Cấu hình giá trị ngẫu nhiên cố định để đảm bảo tính tái lập (Reproducibility)
@@ -46,6 +64,44 @@ SLICE_COLUMNS = ("grade", "home_ownership", "addr_state")
 
 # Cấu hình mặc định: loại bỏ biến định giá (interest_rate, sub_grade) ở champion model
 CHAMPION_INCLUDE_PRICING = False
+
+
+def build_temporal_cv(issue_dates: pd.Series) -> list[tuple[np.ndarray, np.ndarray]]:
+    """
+    Tạo các Folds Cross-Validation theo mốc thời gian (Expanding-Window Temporal CV).
+
+    Đảm bảo không rò rỉ thông tin tương lai:
+    - Fold 1: Train 2007-2008 -> Validate 2009
+    - Fold 2: Train 2007-2009 -> Validate H1/2010 (2010-01 đến 2010-06)
+    - Fold 3: Train 2007-H1/2010 -> Validate H2/2010 (2010-07 đến 2010-12)
+
+    Args:
+        issue_dates (pd.Series): Cột issue_date dạng datetime.
+
+    Returns:
+        list[tuple[np.ndarray, np.ndarray]]: Danh sách các cặp chỉ số (train_idx, val_idx).
+    """
+    dt_series = pd.to_datetime(issue_dates)
+    folds = []
+
+    # Định nghĩa các mốc chia thời gian (Cutoffs)
+    split_configs = [
+        ("2009-01-01", "2009-12-31"),
+        ("2010-01-01", "2010-06-30"),
+        ("2010-07-01", "2010-12-31"),
+    ]
+
+    for val_start, val_end in split_configs:
+        train_mask = dt_series < val_start
+        val_mask = dt_series.between(val_start, val_end)
+
+        train_idx = np.where(train_mask)[0]
+        val_idx = np.where(val_mask)[0]
+
+        if len(train_idx) > 0 and len(val_idx) > 0:
+            folds.append((train_idx, val_idx))
+
+    return folds
 
 
 def make_pipeline(features: pd.DataFrame, estimator: Any = None) -> Pipeline:
@@ -102,7 +158,7 @@ def make_pipeline(features: pd.DataFrame, estimator: Any = None) -> Pipeline:
     return Pipeline(steps=[("preprocess", preprocessing), ("model", estimator)])
 
 
-def candidate_estimators(random_state: int = RANDOM_STATE) -> Dict[str, Any]:
+def candidate_estimators(random_state: int = RANDOM_STATE) -> dict[str, Any]:
     """
     Khởi tạo danh sách các thuật toán ứng viên phục vụ thử nghiệm so sánh.
 
@@ -110,7 +166,7 @@ def candidate_estimators(random_state: int = RANDOM_STATE) -> Dict[str, Any]:
         random_state (int): Hạt giống ngẫu nhiên.
 
     Returns:
-        Dict[str, Any]: Từ điển chứa tên và đối tượng thuật toán.
+        dict[str, Any]: Từ điển chứa tên và đối tượng thuật toán.
     """
     return {
         "dummy": DummyClassifier(strategy="prior"),
@@ -131,14 +187,16 @@ def candidate_estimators(random_state: int = RANDOM_STATE) -> Dict[str, Any]:
 
 
 def compare_models(
+    train_df: pd.DataFrame,
     features: pd.DataFrame,
     target: pd.Series,
     random_state: int = RANDOM_STATE,
 ) -> pd.DataFrame:
     """
-    Thực hiện so sánh các mô hình ứng viên bằng 5-fold Stratified Cross-Validation trên tập Train.
+    Thực hiện so sánh các mô hình ứng viên bằng Expanding-Window Temporal CV trên tập Train.
 
     Args:
+        train_df (pd.DataFrame): DataFrame tập Train có cột issue_date.
         features (pd.DataFrame): Ma trận đặc trưng tập Train.
         target (pd.Series): Nhãn tập Train.
         random_state (int): Hạt giống ngẫu nhiên.
@@ -147,7 +205,7 @@ def compare_models(
         pd.DataFrame: Bảng kết quả trung bình và độ lệch chuẩn của các chỉ số qua các folds.
     """
     candidates = candidate_estimators(random_state)
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=random_state)
+    cv = build_temporal_cv(train_df["issue_date"])
     scoring = {
         "pr_auc": "average_precision",
         "roc_auc": "roc_auc",
@@ -194,7 +252,7 @@ def save_reports(
         comparison (pd.DataFrame): Kết quả so sánh mô hình qua CV.
         metrics (dict[str, float]): Metrics đánh giá trên tập Test.
         slices (dict[str, pd.DataFrame]): Kết quả phân tích theo nhóm thuộc tính.
-        extra_reports (dict[str, pd.DataFrame]): Các báo cáo phụ (Drift, Calibration, Odds Ratio...).
+        extra_reports (dict[str, pd.DataFrame]): Các báo cáo phụ.
     """
     report_dir.mkdir(parents=True, exist_ok=True)
 
@@ -222,10 +280,11 @@ def compare_feature_sets(
     test_data: pd.DataFrame,
 ) -> pd.DataFrame:
     """
-    So sánh hiệu năng giữa hai tập đặc trưng: Có và Không có biến định giá (int_rate, sub_grade).
-
-    Thử nghiệm này (Ablation Study) giúp đánh giá xem mô hình có thực sự học được tín hiệu rủi ro
-    từ thông tin cá nhân của người vay hay chỉ đơn thuần học lại chính sách giá lãi suất của ngân hàng.
+    Thực hiện Ablation Study theo 4 cấp độ thông tin định giá và chính sách cũ:
+    1. `all`: Giữ toàn bộ đặc trưng.
+    2. `no_int_sub`: Loại bỏ int_rate, sub_grade.
+    3. `no_int_sub_grade`: Loại bỏ int_rate, sub_grade, grade.
+    4. `no_pricing_all`: Loại bỏ int_rate, sub_grade, grade, installment.
 
     Args:
         train_data (pd.DataFrame): Tập dữ liệu Train.
@@ -233,34 +292,38 @@ def compare_feature_sets(
         test_data (pd.DataFrame): Tập dữ liệu Test.
 
     Returns:
-        pd.DataFrame: Bảng so sánh các chỉ số trên tập Test của 2 tập đặc trưng.
+        pd.DataFrame: Bảng so sánh chỉ số trên tập Test giữa 4 cấp độ.
     """
+    modes = ["all", "no_int_sub", "no_int_sub_grade", "no_pricing_all"]
     rows = []
-    for include_pricing in (True, False):
-        X_train = build_features(train_data, include_pricing)
-        X_validation = build_features(validation_data, include_pricing)
-        X_test = build_features(test_data, include_pricing)
+
+    for mode in modes:
+        X_tr = build_features(train_data, include_pricing=mode)
+        X_val = build_features(validation_data, include_pricing=mode)
+        X_te = build_features(test_data, include_pricing=mode)
+
+        y_tr = train_data[TARGET]
+        y_val = validation_data[TARGET]
+        y_te = test_data[TARGET]
 
         model = CalibratedClassifierCV(
-            make_pipeline(X_train), method="sigmoid", cv=3, n_jobs=-1
+            make_pipeline(X_tr), method="sigmoid", cv=3, n_jobs=-1
         )
-        model.fit(X_train, train_data[TARGET])
+        model.fit(X_tr, y_tr)
+        val_prob = model.predict_proba(X_val)[:, 1]
+        thresh, _ = choose_threshold(y_val, val_prob)
+        test_prob = model.predict_proba(X_te)[:, 1]
 
-        # Chọn ngưỡng tối ưu trên tập Validation
-        validation_prob = model.predict_proba(X_validation)[:, 1]
-        threshold, _ = choose_threshold(validation_data[TARGET], validation_prob)
-
-        # Đánh giá trên tập Test
-        test_prob = model.predict_proba(X_test)[:, 1]
-        test_metrics = classification_metrics(test_data[TARGET], test_prob, threshold)
-
+        m = classification_metrics(y_te, test_prob, thresh)
         rows.append(
             {
-                "feature_set": "with_pricing" if include_pricing else "without_pricing",
-                "threshold": threshold,
-                **test_metrics,
+                "feature_set_mode": mode,
+                "threshold": thresh,
+                "feature_count": X_tr.shape[1],
+                **m,
             }
         )
+
     return pd.DataFrame(rows)
 
 
@@ -283,7 +346,9 @@ def train(
         dict[str, Any]: Từ điển chứa thông tin artifact đã được lưu.
     """
     # 1. Nạp dữ liệu và kiểm tra Schema
-    labeled = create_target(load_data(data_path))
+    raw_data = load_data(data_path)
+    censoring_report = analyze_target_censoring(raw_data)
+    labeled = create_target(raw_data)
 
     # 2. Chia tập dữ liệu theo mốc thời gian
     train_data, validation_data, test_data = temporal_split(labeled)
@@ -297,8 +362,8 @@ def train(
     y_validation = validation_data[TARGET]
     y_test = test_data[TARGET]
 
-    # 4. So sánh các mô hình trên tập Train (5-fold CV)
-    comparison = compare_models(X_train, y_train, random_state)
+    # 4. So sánh các mô hình trên tập Train (Temporal CV)
+    comparison = compare_models(train_data, X_train, y_train, random_state)
 
     # Chọn mô hình vô địch (loại bỏ DummyClassifier)
     eligible = comparison.loc[comparison["model"] != "dummy"]
@@ -322,6 +387,23 @@ def train(
     # 7. Mở tập Test để đánh giá kết quả cuối cùng
     test_prob = calibrated_pipeline.predict_proba(X_test)[:, 1]
     metrics = classification_metrics(y_test, test_prob, optimal_threshold)
+
+    # Tính toán khoảng tin cậy 95% Bootstrap CIs cho các metrics chính
+    metric_funcs = {
+        "pr_auc": average_precision_score,
+        "roc_auc": roc_auc_score,
+        "recall": lambda y, p: recall_score(y, p >= optimal_threshold, zero_division=0),
+        "precision": lambda y, p: precision_score(y, p >= optimal_threshold, zero_division=0),
+        "brier_score": brier_score_loss,
+    }
+    bootstrap_cis = {}
+    for m_name, fn in metric_funcs.items():
+        val, lower, upper = bootstrap_metric_ci(y_test, test_prob, fn, n_bootstrap=500, random_state=random_state)
+        bootstrap_cis[m_name] = {"value": val, "ci_lower": lower, "ci_upper": upper}
+
+
+    # Tính toán chẩn đoán hiệu chỉnh xác suất (Calibration Diagnostics)
+    calibration_diag = compute_calibration_diagnostics(y_test, test_prob)
 
     # Phân tích độ nhạy của ngưỡng theo các mức chi phí tổn thất khác nhau (2:1, 5:1, 10:1)
     threshold_sensitivity = []
@@ -357,9 +439,12 @@ def train(
     # Tổng hợp các báo cáo phụ
     extra_reports = {
         "feature_set_comparison": compare_feature_sets(
-            train_data, validation_data, test_data
+            train_data,
+            validation_data,
+            test_data,
         ),
         "threshold_sensitivity": pd.DataFrame(threshold_sensitivity),
+        "target_censoring_report": censoring_report,
         "calibration_test": calibration_table(y_test, test_prob),
         "drift_psi": drift_report(X_train, X_test),
         "logistic_odds_ratios": logistic_odds_ratios(explanation_pipeline),
@@ -368,14 +453,30 @@ def train(
     # Lưu tất cả báo cáo
     save_reports(report_dir, comparison, metrics, slices, extra_reports)
 
+    # Tính toán SHA256 của file CSV
+    data_sha = ""
+    if data_path.exists():
+        h = hashlib.sha256()
+        with open(data_path, "rb") as f:
+            h.update(f.read(4096 * 1024))
+        data_sha = h.hexdigest()
+
     # 8. Đóng gói mô hình và metadata vào một Artifact duy nhất
     artifact = {
         "pipeline": calibrated_pipeline,
         "threshold": optimal_threshold,
         "feature_columns": X_train.columns.tolist(),
         "metrics": metrics,
+        "bootstrap_ci": bootstrap_cis,
+        "calibration_diagnostics": calibration_diag,
         "label_definition": {"Fully Paid": 0, "Charged Off": 1},
         "model_name": f"calibrated_{champion_name}",
+        "model_version": "1.0.0",
+        "trained_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "data_sha256": data_sha,
+        "python_version": sys.version,
+        "sklearn_version": sklearn.__version__,
+        "feature_schema_version": "1.0",
         "include_pricing_features": CHAMPION_INCLUDE_PRICING,
         "random_state": random_state,
         "data_rows": len(labeled),
@@ -430,14 +531,19 @@ def main() -> None:
 
     print("\n==================================================")
     print(f"✅ Hoàn tất! Đã lưu mô hình tại: {args.output}")
-    print(f"🎯 Mô hình Champion: {artifact['model_name']}")
+    print(f"🎯 Mô hình Champion: {artifact['model_name']} (v{artifact['model_version']})")
     print(f"⚖️ Ngưỡng tối ưu theo chi phí (Validation): {artifact['threshold']:.2f}")
     print("--------------------------------------------------")
-    print("📊 Hiệu năng đánh giá trên tập Out-of-Time Test:")
-    for metric_name, val in artifact["metrics"].items():
-        print(f"  - {metric_name:20s}: {val:.4f}")
+    print("📊 Hiệu năng đánh giá trên tập Out-of-Time Test (với 95% Bootstrap CIs):")
+    for metric_name, ci_info in artifact["bootstrap_ci"].items():
+        print(f"  - {metric_name:20s}: {ci_info['value']:.4f} [95% CI: {ci_info['ci_lower']:.4f} – {ci_info['ci_upper']:.4f}]")
+    print("--------------------------------------------------")
+    print("📉 Chẩn đoán hiệu chỉnh xác suất (Calibration Diagnostics):")
+    for diag_name, diag_val in artifact["calibration_diagnostics"].items():
+        print(f"  - {diag_name:30s}: {diag_val:.4f}")
     print("==================================================\n")
 
 
 if __name__ == "__main__":
     main()
+

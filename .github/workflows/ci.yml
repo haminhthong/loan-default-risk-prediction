@@ -10,4 +10,10 @@ jobs:
           python-version: "3.11"
           cache: pip
       - run: python -m pip install -r requirements-dev.txt
-      - run: pytest -q
+      - run: python -m pytest -q
+      - run: python -m compileall src app scripts
+      - run: docker build -t loan-default-risk:test .
+      - run: |
+          docker run -d --name loan-api -p 8000:8000 loan-default-risk:test
+          sleep 3
+          curl -f http://localhost:8000/health || exit 1

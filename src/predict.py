@@ -19,6 +19,20 @@ import pandas as pd
 from src.features import build_features
 
 
+class ArtifactError(RuntimeError):
+    """Lỗi khi tệp artifact không đúng định dạng hoặc thiếu các thông tin bắt buộc."""
+
+    pass
+
+
+REQUIRED_ARTIFACT_KEYS = {
+    "pipeline",
+    "threshold",
+    "feature_columns",
+    "model_name",
+}
+
+
 def load_artifact(
     path: str | Path = "artifacts/loan_default_cv.joblib",
 ) -> dict[str, Any]:
@@ -33,14 +47,31 @@ def load_artifact(
 
     Raises:
         FileNotFoundError: Nếu tệp mô hình không tồn tại.
+        ArtifactError: Nếu artifact bị thiếu các key bắt buộc.
     """
     artifact_path = Path(path)
     if not artifact_path.exists():
         raise FileNotFoundError(f"Không tìm thấy tệp artifact tại đường dẫn: {artifact_path}")
-    return joblib.load(artifact_path)
+    
+    try:
+        artifact = joblib.load(artifact_path)
+    except Exception as exc:
+        raise ArtifactError(f"Không thể nạp file joblib artifact: {exc}") from exc
+
+    if not isinstance(artifact, dict):
+        raise ArtifactError("Artifact phải là một dict Python chứa pipeline và metadata.")
+
+    missing_keys = REQUIRED_ARTIFACT_KEYS - artifact.keys()
+    if missing_keys:
+        raise ArtifactError(
+            f"Artifact thiếu các key bắt buộc: {sorted(missing_keys)}"
+        )
+
+    return artifact
 
 
 def predict(data: pd.DataFrame, artifact: dict[str, Any]) -> pd.DataFrame:
+
     """
     Thực hiện dự báo xác suất vỡ nợ và đưa ra quyết định tín dụng cho dữ liệu khoản vay mới.
 

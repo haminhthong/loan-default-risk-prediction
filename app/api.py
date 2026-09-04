@@ -8,15 +8,17 @@ Cung cấp các API endpoints phục vụ tích hợp hệ thống:
 4. `/explain` - Trích xuất các đặc trưng và hệ số Odds Ratio phục vụ giải thích mô hình.
 """
 
+import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, List, Dict
+from typing import Any, Literal
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from fastapi import FastAPI, Header, HTTPException, Security, Depends
+from fastapi.security.api_key import APIKeyHeader
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from src.predict import load_artifact, predict
+from src.predict import ArtifactError, load_artifact, predict
 
 # Xác định đường dẫn gốc dự án và đường dẫn file mô hình artifact
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,6 +31,15 @@ app = FastAPI(
     version="1.0.0",
 )
 
+# API Key security scheme (tùy chọn theo biến môi trường LOAN_API_KEY)
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+def verify_api_key(api_key: str | None = Security(api_key_header)) -> None:
+    expected_key = os.environ.get("LOAN_API_KEY")
+    if expected_key and api_key != expected_key:
+        raise HTTPException(status_code=401, detail="X-API-Key không hợp lệ hoặc bị thiếu.")
+
 
 class LoanApplication(BaseModel):
     """
@@ -36,21 +47,19 @@ class LoanApplication(BaseModel):
     Chỉ bao gồm các thuộc tính sẵn có TẠI THỜI ĐIỂM CẤP VAY để tránh Data Leakage.
     """
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="forbid")
 
     loan_amnt: float = Field(..., gt=0, description="Số tiền xin vay (USD)", examples=[10000.0])
-    term: str = Field(..., description="Kỳ hạn vay (ví dụ: '36 months' hoặc '60 months')", examples=["36 months"])
-    int_rate: str = Field(..., description="Lãi suất khoản vay", examples=["12.50%"])
+    term: Literal["36 months", "60 months"] = Field(..., description="Kỳ hạn vay ('36 months' hoặc '60 months')", examples=["36 months"])
     installment: float = Field(..., gt=0, description="Số tiền phải trả góp hàng tháng (USD)", examples=[334.54])
-    grade: str = Field(..., description="Xếp hạng tín dụng gốc (A, B, C, D, E, F, G)", examples=["B"])
-    sub_grade: str = Field(..., description="Phân hạng tín dụng chi tiết (B1, B2, ...)", examples=["B3"])
-    emp_length: str | None = Field(default=None, description="Thời gian làm việc (ví dụ: '10+ years', '2 years')", examples=["5 years"])
-    home_ownership: str = Field(..., description="Hình thức sở hữu nhà (RENT, OWN, MORTGAGE)", examples=["RENT"])
+    grade: Literal["A", "B", "C", "D", "E", "F", "G"] = Field(..., description="Xếp hạng tín dụng gốc (A, B, C, D, E, F, G)", examples=["B"])
+    emp_length: str | None = Field(default=None, description="Thời gian làm việc", examples=["5 years"])
+    home_ownership: Literal["RENT", "OWN", "MORTGAGE", "OTHER"] = Field(..., description="Hình thức sở hữu nhà", examples=["RENT"])
     annual_inc: float = Field(..., gt=0, description="Tổng thu nhập hàng năm (USD)", examples=[60000.0])
-    verification_status: str = Field(..., description="Trạng thái xác minh thu nhập (Verified, Source Verified, Not Verified)", examples=["Verified"])
+    verification_status: Literal["Verified", "Source Verified", "Not Verified"] = Field(..., description="Trạng thái xác minh thu nhập", examples=["Verified"])
     purpose: str = Field(..., description="Mục đích sử dụng khoản vay", examples=["debt_consolidation"])
-    addr_state: str = Field(..., min_length=2, max_length=2, description="Mã bang cư trú (ví dụ: CA, NY, TX)", examples=["CA"])
-    dti: float | None = Field(default=None, ge=0, description="Tỷ lệ nợ trên thu nhập (Debt-to-Income ratio %)", examples=[15.2])
+    addr_state: str = Field(..., pattern=r"^[A-Z]{2}$", description="Mã bang cư trú (ví dụ: CA, NY, TX)", examples=["CA"])
+    dti: float | None = Field(default=None, ge=0, le=100, description="Tỷ lệ nợ trên thu nhập (Debt-to-Income ratio %)", examples=[15.2])
     delinq_2yrs: float | None = Field(default=None, ge=0, description="Số lần nợ quá hạn trong 2 năm qua", examples=[0.0])
     inq_last_6mths: float | None = Field(default=None, ge=0, description="Số lần truy vấn tín dụng trong 6 tháng gần nhất", examples=[1.0])
     open_acc: float | None = Field(default=None, ge=0, description="Số tài khoản tín dụng đang mở", examples=[10.0])
@@ -61,11 +70,28 @@ class LoanApplication(BaseModel):
     earliest_cr_line: str | None = Field(default=None, description="Tháng/Năm mở tài khoản tín dụng đầu tiên", examples=["Jan-00"])
     issue_d: str = Field(..., description="Tháng/Năm phát hành khoản vay", examples=["Dec-11"])
 
+    @model_validator(mode="after")
+    def validate_credit_dates(self) -> "LoanApplication":
+        if self.earliest_cr_line and self.issue_d:
+            try:
+                earliest = pd.to_datetime(self.earliest_cr_line, format="%b-%y", errors="coerce")
+                issue = pd.to_datetime(self.issue_d, format="%b-%y", errors="coerce")
+                if pd.notna(earliest) and pd.notna(issue):
+                    if earliest > issue:
+                        earliest = earliest - pd.DateOffset(years=100)
+                    if earliest > issue:
+                        raise ValueError("earliest_cr_line không được sau issue_d.")
+            except ValueError as ve:
+                raise ve
+            except Exception:
+                pass
+        return self
+
 
 class ScoreRequest(BaseModel):
     """Schema danh sách các hồ sơ vay trong một yêu cầu chấm điểm theo lô (Batch)."""
 
-    records: List[LoanApplication] = Field(..., min_length=1, max_length=1000, description="Danh sách các hồ sơ cần chấm điểm.")
+    records: list[LoanApplication] = Field(..., min_length=1, max_length=1000, description="Danh sách các hồ sơ cần chấm điểm.")
 
 
 class ScorePredictionResult(BaseModel):
@@ -79,8 +105,9 @@ class ScoreResponse(BaseModel):
     """Schema phản hồi kết quả API /score."""
 
     model_name: str = Field(..., description="Tên mô hình Champion đang sử dụng")
+    model_version: str = Field(default="1.0.0", description="Phiên bản mô hình đã huấn luyện")
     threshold: float = Field(..., description="Ngưỡng quyết định rủi ro được áp dụng")
-    predictions: List[ScorePredictionResult] = Field(..., description="Danh sách kết quả dự báo tương ứng từng hồ sơ")
+    predictions: list[ScorePredictionResult] = Field(..., description="Danh sách kết quả dự báo tương ứng từng hồ sơ")
 
 
 @lru_cache(maxsize=1)
@@ -95,22 +122,27 @@ def get_artifact() -> dict[str, Any]:
 
 
 @app.get("/health", summary="Kiểm tra trạng thái hệ thống")
-def health() -> dict[str, str]:
-    """Trả về trạng thái hoạt động của dịch vụ API và file mô hình."""
+def health() -> dict[str, Any]:
+    """Trả về trạng thái hoạt động của dịch vụ API và sự hiện diện của tệp mô hình."""
     return {
         "status": "ok" if MODEL_PATH.exists() else "model_missing",
-        "model_path": str(MODEL_PATH),
+        "model_loaded": MODEL_PATH.exists(),
     }
 
 
-@app.get("/info", summary="Truy vấn thông tin mô hình")
+@app.get("/info", summary="Truy vấn thông tin mô hình", dependencies=[Depends(verify_api_key)])
 def model_info() -> dict[str, Any]:
     """Trả về metadata mô hình, ngưỡng quyết định và các chỉ số hiệu năng trên tập Test."""
     if not MODEL_PATH.exists():
         raise HTTPException(status_code=503, detail="Chưa tìm thấy mô hình artifact. Vui lòng chạy huấn luyện trước.")
-    artifact = get_artifact()
+    try:
+        artifact = get_artifact()
+    except ArtifactError as err:
+        raise HTTPException(status_code=503, detail=f"Lỗi nạp mô hình: {err}") from err
+
     return {
         "model_name": artifact.get("model_name"),
+        "model_version": artifact.get("model_version", "1.0.0"),
         "threshold": artifact.get("threshold"),
         "metrics": artifact.get("metrics"),
         "data_rows": artifact.get("data_rows"),
@@ -119,7 +151,7 @@ def model_info() -> dict[str, Any]:
     }
 
 
-@app.post("/score", response_model=ScoreResponse, summary="Chấm điểm rủi ro cho danh sách hồ sơ vay")
+@app.post("/score", response_model=ScoreResponse, summary="Chấm điểm rủi ro cho danh sách hồ sơ vay", dependencies=[Depends(verify_api_key)])
 def score(payload: ScoreRequest) -> ScoreResponse:
     """
     Thực hiện chấm điểm danh sách hồ sơ tín dụng đầu vào và trả về xác suất rủi ro cùng nhãn quyết định.
@@ -134,6 +166,8 @@ def score(payload: ScoreRequest) -> ScoreResponse:
         records_data = [record.model_dump() for record in payload.records]
         input_df = pd.DataFrame(records_data)
         predictions_df = predict(input_df, artifact)
+    except ArtifactError as err:
+        raise HTTPException(status_code=503, detail=f"Lỗi mô hình artifact: {err}") from err
     except (KeyError, ValueError, TypeError) as exc:
         raise HTTPException(
             status_code=422,
@@ -141,13 +175,14 @@ def score(payload: ScoreRequest) -> ScoreResponse:
         ) from exc
 
     return ScoreResponse(
-        model_name=artifact["model_name"],
+        model_name=artifact.get("model_name", "Logistic Regression"),
+        model_version=artifact.get("model_version", "1.0.0"),
         threshold=artifact["threshold"],
         predictions=predictions_df.to_dict(orient="records"),
     )
 
 
-@app.get("/explain", summary="Giải thích mô hình qua Odds Ratios")
+@app.get("/explain", summary="Giải thích mô hình qua Odds Ratios", dependencies=[Depends(verify_api_key)])
 def explain() -> dict[str, Any]:
     """
     Trả về danh sách các đặc trưng ảnh hưởng mạnh nhất đến rủi ro vỡ nợ dưới dạng Odds Ratios.
@@ -162,3 +197,4 @@ def explain() -> dict[str, Any]:
         "description": "Odds Ratio > 1.0 làm tăng nguy cơ vỡ nợ; Odds Ratio < 1.0 làm giảm nguy cơ vỡ nợ.",
         "top_features": odds_df.to_dict(orient="records"),
     }
+

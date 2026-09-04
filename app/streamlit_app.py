@@ -4,7 +4,7 @@
 Giao diện tương tác chuyên nghiệp gồm 3 Tab:
 1. 📝 Thẩm Định Hồ Sơ Đơn (Single Applicant Scoring):
    Form nhập thông tin khoản vay thực tế cho nhân viên tín dụng, tính toán xác suất rủi ro,
-   hiển thị đồng hồ đo rủi ro (Risk Meter) và khuyến nghị Phê duyệt / Cảnh báo.
+   hiển thị mức cảnh báo rủi ro phục vụ minh họa kỹ thuật.
 2. 📁 Chấm Điểm Hàng Loạt (Batch CSV Scoring):
    Tải file CSV danh sách hồ sơ vay, tự động chấm điểm và hỗ trợ xuất dữ liệu báo cáo.
 3. 📊 Tổng Quan & Chẩn Đoán Mô Hình (Model Diagnostics):
@@ -50,7 +50,6 @@ def render_single_applicant_tab(artifact: dict[str, Any]) -> None:
     with col1:
         loan_amnt = st.number_input("Số tiền xin vay (USD)", min_value=500, max_value=40000, value=10000, step=500)
         term = st.selectbox("Kỳ hạn vay", options=["36 months", "60 months"], index=0)
-        int_rate_num = st.slider("Lãi suất (%/năm)", min_value=5.0, max_value=30.0, value=12.5, step=0.1)
         installment = st.number_input("Số tiền trả góp hàng tháng (USD)", min_value=10.0, max_value=2000.0, value=334.54, step=10.0)
 
     with col2:
@@ -61,7 +60,6 @@ def render_single_applicant_tab(artifact: dict[str, Any]) -> None:
 
     with col3:
         grade = st.selectbox("Hạng tín dụng gốc (Grade)", options=["A", "B", "C", "D", "E", "F", "G"], index=1)
-        sub_grade = st.selectbox("Phân hạng chi tiết (Sub Grade)", options=[f"{grade}{i}" for i in range(1, 6)], index=2)
         purpose = st.selectbox(
             "Mục đích sử dụng khoản vay",
             options=["debt_consolidation", "credit_card", "home_improvement", "major_purchase", "small_business", "other"],
@@ -89,13 +87,10 @@ def render_single_applicant_tab(artifact: dict[str, Any]) -> None:
     if st.button("🚀 Chấm Điểm Hồ Sơ Tín Dụng", type="primary", use_container_width=True):
         # Chuẩn hóa dữ liệu đầu vào thành 1 bản ghi DataFrame
         single_record = {
-            "id": 999999,
             "loan_amnt": loan_amnt,
             "term": term,
-            "int_rate": f"{int_rate_num:.2f}%",
             "installment": installment,
             "grade": grade,
-            "sub_grade": sub_grade,
             "emp_length": emp_length,
             "home_ownership": home_ownership,
             "annual_inc": annual_inc,
@@ -112,7 +107,6 @@ def render_single_applicant_tab(artifact: dict[str, Any]) -> None:
             "total_acc": total_acc,
             "earliest_cr_line": "Jan-00",
             "issue_d": "Dec-11",
-            "loan_status": "Fully Paid",
         }
 
         input_df = pd.DataFrame([single_record])
@@ -132,10 +126,10 @@ def render_single_applicant_tab(artifact: dict[str, Any]) -> None:
         with res_col2:
             if pred_label == 1:
                 st.error("🚨 **CẢNH BÁO RỦI RO VỠ NỢ CAO (HIGH RISK)**")
-                st.warning("Xác suất rủi ro vượt ngưỡng an toàn. Khuyến nghị: **Yêu cầu bổ sung tài sản đảm bảo hoặc Từ chối cấp vay**.")
+                st.warning("Xác suất vượt ngưỡng minh họa. Kết quả không thay thế thẩm định tín dụng của con người.")
             else:
-                st.success("✅ **HỒ SƠ AN TOÀN (APPROVED / LOW RISK)**")
-                st.info("Xác suất rủi ro trong phạm vi chấp nhận được. Khuyến nghị: **Phê duyệt khoản vay theo hạn mức**.")
+                st.success("✅ **MỨC CẢNH BÁO THẤP (LOWER RISK FLAG)**")
+                st.info("Kết quả chỉ là điểm rủi ro mô hình, không phải quyết định phê duyệt khoản vay.")
 
         # Hiển thị thanh đo rủi ro (Risk Gauge Meter)
         st.markdown("#### Đồng Hồ Đo Rủi Ro Tín Dụng")
@@ -143,23 +137,47 @@ def render_single_applicant_tab(artifact: dict[str, Any]) -> None:
 
 
 def render_batch_tab(artifact: dict[str, Any]) -> None:
-    """Hiển thị Tab 2: Chấm điểm hàng loạt qua CSV."""
+    """Hiển thị Tab 2: Chấm điểm hàng loạt qua CSV với kiểm soát kích thước và giới hạn dòng."""
     st.markdown("### 📁 Chấm Điểm Danh Sách Hồ Sơ Hàng Loạt (Batch Scoring)")
-    st.write("Tải lên tệp CSV chứa danh sách các khoản vay để hệ thống tự động đánh giá:")
+    st.write("Tải lên tệp CSV chứa danh sách các khoản vay (tối đa 10 MB và 10.000 hồ sơ mỗi lần):")
 
     uploaded_file = st.file_uploader(
         "Chọn tệp CSV (Cùng cấu trúc với dữ liệu huấn luyện LendingClub)",
         type=["csv"],
     )
 
+    MAX_FILE_SIZE_MB = 10
+    MAX_ROWS = 10_000
+
     if uploaded_file is not None:
-        input_data = pd.read_csv(uploaded_file)
-        st.info(f"Đã nạp tệp CSV thành công: **{len(input_data)}** bản ghi.")
+        if uploaded_file.size > MAX_FILE_SIZE_MB * 1024 * 1024:
+            st.error(f"❌ Tệp vượt quá giới hạn dung lượng {MAX_FILE_SIZE_MB} MB.")
+            st.stop()
+
+        try:
+            input_data = pd.read_csv(uploaded_file)
+        except Exception:
+            st.error("❌ Không thể đọc tệp CSV. Vui lòng kiểm tra lại định dạng tệp.")
+            st.stop()
+
+        if len(input_data) > MAX_ROWS:
+            st.error(f"❌ Danh sách vượt quá giới hạn tối đa {MAX_ROWS:,} hồ sơ mỗi lần xử lý.")
+            st.stop()
+
+        if len(input_data) == 0:
+            st.error("❌ Tệp CSV không chứa dòng dữ liệu nào.")
+            st.stop()
+
+        st.info(f"Đã nạp tệp CSV thành công: **{len(input_data):,}** bản ghi.")
 
         if st.button("⚡ Thực Hiện Chấm Điểm Hàng Loạt", type="primary"):
             with st.spinner("Đang chạy pipeline suy luận dự báo..."):
-                predictions = predict(input_data, artifact)
-                result_df = pd.concat([input_data, predictions], axis=1)
+                try:
+                    predictions = predict(input_data, artifact)
+                    result_df = pd.concat([input_data, predictions], axis=1)
+                except Exception as err:
+                    st.error(f"❌ Lỗi suy luận dự báo: Dữ liệu không tương thích hoặc thiếu thuộc tính bắt buộc.")
+                    st.stop()
 
             st.success("✅ Đã hoàn tất chấm điểm hàng loạt!")
 
@@ -182,6 +200,7 @@ def render_batch_tab(artifact: dict[str, Any]) -> None:
                 file_name="loan_default_predictions_batch.csv",
                 mime="text/csv",
             )
+
 
 
 def render_diagnostics_tab(artifact: dict[str, Any]) -> None:

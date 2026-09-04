@@ -47,6 +47,25 @@ MODEL_COLUMNS = [
 ]
 
 
+# Tập hợp các cột rò rỉ dữ liệu (Denylist) tuyệt đối không được xuất hiện trong ma trận đặc trưng
+LEAKAGE_COLUMNS = {
+    "loan_status",
+    "default_flag",
+    "total_pymnt",
+    "total_pymnt_inv",
+    "total_rec_prncp",
+    "total_rec_int",
+    "total_rec_late_fee",
+    "recoveries",
+    "collection_recovery_fee",
+    "last_pymnt_d",
+    "last_pymnt_amnt",
+    "next_pymnt_d",
+    "out_prncp",
+    "out_prncp_inv",
+}
+
+
 def create_target(data: pd.DataFrame) -> pd.DataFrame:
     """
     Lọc bỏ các khoản vay chưa kết thúc ('Current') và tạo cột nhãn nhị phân `default_flag`.
@@ -84,7 +103,7 @@ def _parse_percentage(series: pd.Series) -> pd.Series:
 
 def build_features(
     data: pd.DataFrame,
-    include_pricing: bool = True,
+    include_pricing: bool | str = True,
 ) -> pd.DataFrame:
     """
     Trích xuất và tính toán các đặc trưng (Feature Engineering) từ dữ liệu đầu vào.
@@ -100,7 +119,11 @@ def build_features(
 
     Args:
         data (pd.DataFrame): Dữ liệu khoản vay đầu vào.
-        include_pricing (bool): Có giữ lại biến lãi suất và sub-grade hay không (Default: True).
+        include_pricing (bool | str): Chế độ xử lý biến định giá (Ablation Mode):
+            - True / 'all': Giữ nguyên tất cả đặc trưng.
+            - False / 'no_int_sub': Loại bỏ `interest_rate`, `sub_grade`.
+            - 'no_int_sub_grade': Loại bỏ `interest_rate`, `sub_grade`, `grade`.
+            - 'no_pricing_all': Loại bỏ `interest_rate`, `sub_grade`, `grade`, `installment`, `installment_income_ratio`.
 
     Returns:
         pd.DataFrame: Ma trận đặc trưng sẵn sàng cho tiền xử lý và huấn luyện mô hình.
@@ -160,10 +183,28 @@ def build_features(
         issue_date = features.pop("issue_date")
         features["issue_month"] = issue_date.dt.month
 
-    # 5. Loại bỏ thuộc tính định giá nếu include_pricing=False (để thử nghiệm ablation study)
-    if not include_pricing:
+    # 5. Ablation study: Loại bỏ các biến định giá theo từng cấp độ
+    mode = include_pricing
+    if mode is False or mode == "no_int_sub":
         features = features.drop(
             columns=["interest_rate", "sub_grade"], errors="ignore"
         )
+    elif mode == "no_int_sub_grade":
+        features = features.drop(
+            columns=["interest_rate", "sub_grade", "grade"], errors="ignore"
+        )
+    elif mode == "no_pricing_all":
+        features = features.drop(
+            columns=["interest_rate", "sub_grade", "grade", "installment", "installment_income_ratio"],
+            errors="ignore",
+        )
+
+    # 6. Kiểm tra bảo vệ chống rò rỉ dữ liệu (Denylist Leakage Guard)
+    unexpected_leakage = LEAKAGE_COLUMNS.intersection(features.columns)
+    if unexpected_leakage:
+        raise ValueError(
+            f"Phát hiện cột hậu nghiệm (Data Leakage) trong đặc trưng mô hình: {sorted(unexpected_leakage)}"
+        )
 
     return features
+

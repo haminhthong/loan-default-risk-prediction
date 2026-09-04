@@ -116,3 +116,38 @@ def temporal_split(data: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, pd.D
         )
 
     return train, validation, test
+
+
+def analyze_target_censoring(data: pd.DataFrame) -> pd.DataFrame:
+    """
+    Báo cáo phân bổ trạng thái khoản vay và tỷ lệ loại trừ (Current loans) theo từng tháng phát hành.
+
+    Args:
+        data (pd.DataFrame): DataFrame chứa `issue_d` hoặc `issue_date` và `loan_status`.
+
+    Returns:
+        pd.DataFrame: Bảng tổng hợp theo tháng gồm tổng số khoản vay, số Fully Paid, Charged Off,
+                     Current, và tỷ lệ bị loại (exclusion_rate).
+    """
+    df = data.copy()
+    if "issue_date" not in df.columns and "issue_d" in df.columns:
+        df["issue_date"] = pd.to_datetime(df["issue_d"], format="%b-%y", errors="coerce")
+
+    df["cohort_month"] = df["issue_date"].dt.to_period("M").astype(str)
+
+    summary = (
+        df.groupby("cohort_month")["loan_status"]
+        .value_counts()
+        .unstack(fill_value=0)
+    )
+
+    for col in ["Fully Paid", "Charged Off", "Current"]:
+        if col not in summary.columns:
+            summary[col] = 0
+
+    summary["total_loans"] = summary["Fully Paid"] + summary["Charged Off"] + summary["Current"]
+    summary["excluded_current"] = summary["Current"]
+    summary["exclusion_rate"] = summary["excluded_current"] / summary["total_loans"].replace(0, 1)
+
+    return summary[["total_loans", "Fully Paid", "Charged Off", "Current", "exclusion_rate"]].sort_index()
+
